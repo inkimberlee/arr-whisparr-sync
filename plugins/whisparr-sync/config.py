@@ -27,8 +27,14 @@ class PluginConfig(BaseModel):
     WHISPARR_RENAME: bool = True
     QUALITY_PROFILE: str = "Any"
     ROOT_FOLDER: Optional[Path] = None
+    # Map Stash tag name → Whisparr root folder path (I4)
+    ROOT_FOLDER_MAP: Dict[str, str] = Field(default_factory=dict)
     IGNORE_TAGS: List[str] = Field(default_factory=list)
     DEV_MODE: bool = False
+    # When True, log planned actions but make no API mutations or file moves (I1)
+    DRY_RUN: bool = False
+    # Inter-scene delay in bulk mode to avoid hammering APIs (I3)
+    BULK_DELAY_SECONDS: float = 0.1
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -74,12 +80,23 @@ class PluginConfig(BaseModel):
             return None
         return Path(v).expanduser().resolve()
 
-    @field_validator("WHISPARR_URL", "WHISPARR_KEY", mode="before")
+    @field_validator("WHISPARR_KEY", mode="before")
     @classmethod
-    def not_empty(cls, v: str):
+    def key_not_empty(cls, v: str):
         if not v or not str(v).strip():
             raise ValueError("must not be empty")
         return v.strip()
+
+    @field_validator("WHISPARR_URL", mode="before")
+    @classmethod
+    def normalize_url(cls, v: str):
+        """B4: enforce http:// scheme and strip trailing slash."""
+        if not v or not str(v).strip():
+            raise ValueError("must not be empty")
+        v = v.strip()
+        if not v.startswith(("http://", "https://")):
+            v = f"http://{v}"
+        return v.rstrip("/")
 
 
 # =========================

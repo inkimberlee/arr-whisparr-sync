@@ -414,26 +414,34 @@ class WhisparrInterface:
         self.move: bool = config.MOVE_FILES
         self.http_json = http_func
         self.rename: bool = config.WHISPARR_RENAME
-        self.root_dir: str = str(config.ROOT_FOLDER)
+        self.root_dir: str = str(config.ROOT_FOLDER) if config.ROOT_FOLDER else ""
         self.qualprofile: str = config.QUALITY_PROFILE
-        self.config: Dict = config
-        self.filenames: str = stash_scene.files
+        self.config: "PluginConfig" = config
+        self.filenames: List[StashFile] = stash_scene.files
+        self.dry_run: bool = config.DRY_RUN
 
     def process_scene(self) -> None:
         """
         Process the Stash scene: find it in Whisparr, create if missing,
-        and handle file imports/moves.
+        and handle file imports/moves. Respects DRY_RUN mode.
         """
+        if self.dry_run:
+            logger.info("[DRY-RUN] Would process scene: %s", self.stash_scene.title)
+
         self.whisparr_scene = self.find_existing_scene()
 
         if not self.whisparr_scene:
             self.create_scene()
-            self.whisparr_scene = self.find_existing_scene()
-        did_move_files = self.process_stash_files()
-        logger.debug("Did any file move operations happen? %s", did_move_files)
-        if did_move_files:
-            self._queue_command("RefreshMovie")
-        self.import_stash_file()
+            if not self.dry_run:
+                self.whisparr_scene = self.find_existing_scene()
+        if not self.dry_run:
+            did_move_files = self.process_stash_files()
+            logger.debug("Did any file move operations happen? %s", did_move_files)
+            if did_move_files:
+                self._queue_command("RefreshMovie")
+            self.import_stash_file()
+        else:
+            logger.info("[DRY-RUN] Would move/import files for: %s", self.stash_scene.title)
 
     def find_existing_scene(self) -> Optional[WhisparrScene]:
         status, scenes = self.http_json(
@@ -458,8 +466,15 @@ class WhisparrInterface:
         Create a Whisparr scene based on the Stash scene.
         Guaranteed to have a stashdb_id at this point.
         """
-        # Assert stashdb_id exists to satisfy mypy
         stashdb_id: str = self.stash_scene.stashdb_id  # type: ignore[assignment]
+        root_folder = self.get_default_root_folder()
+
+        if self.dry_run:
+            logger.info(
+                "[DRY-RUN] Would create Whisparr movie: %s (root: %s)",
+                self.stash_scene.title, root_folder,
+            )
+            return
 
         scene_payload = WhisparrSceneCreate(
             title=self.stash_scene.title,
@@ -467,7 +482,7 @@ class WhisparrInterface:
             stashId=stashdb_id,
             monitored=self.monitored,
             qualityProfileId=self.get_default_quality_profile(),
-            rootFolderPath=self.get_default_root_folder(),
+            rootFolderPath=root_folder,
             addOptions={
                 "monitor": "movieOnly" if self.monitored else "none",
                 "searchForMovie": False,
@@ -622,23 +637,32 @@ class WhisparrInterface:
         return int(any_id or 1)
 
     def get_default_root_folder(self) -> str:
-        result = self.http_json(
+        # I4: tag-based routing takes highest priority
+        root_folder_map = getattr(self.config, "ROOT_FOLDER_MAP", {})
+        if root_folder_map:
+            for tag in self.stash_scene.tags:
+                if tag in root_folder_map:
+                    logger.debug("Routing scene to root folder via tag '%s': %s", tag, root_folder_map[tag])
+                    return root_folder_map[tag]
+
+        # B3: fetch and validate root folders from API
+        _status, rfs = self.http_json(
             method="GET", url=f"{self.url}/api/v3/rootfolder", api_key=self.key
         )
-        rfs: List[Dict[str, str]] = result[1]
+        if not isinstance(rfs, list):
+            raise WhisparrError(f"Unexpected root folder API response (expected list, got {type(rfs).__name__}): {rfs}")
 
-        # Check for configured root_dir
-        if self.root_dir != "":
+        # Configured ROOT_FOLDER takes priority over first-available
+        if self.root_dir:
             rf = next((rf for rf in rfs if rf["path"] == self.root_dir), None)
             if rf is not None:
                 return rf["path"]
+            logger.warning("Configured ROOT_FOLDER '%s' not found in Whisparr; falling back to first available", self.root_dir)
 
-        # Fallback to first root folder if available
         if rfs:
             return rfs[0]["path"]
 
-        # Safe fallback if list is empty
-        raise ValueError("No root folders returned from API")
+        raise WhisparrError("No root folders returned from Whisparr API")
 
 
 class StashHelpers:
@@ -753,6 +777,23 @@ def process_single_scene(config, scene_id):
 from typing import Optional
 
 
+def _load_already_processed(bulk_results: Path) -> set:
+    """I2: Return set of scene_ids already recorded as Success in the CSV."""
+    done: set = set()
+    if not bulk_results.exists() or bulk_results.stat().st_size == 0:
+        return done
+    with open(bulk_results, newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)  # skip header
+        for row in reader:
+            if len(row) >= 2 and row[1] == "Success":
+                try:
+                    done.add(int(row[0]))
+                except ValueError:
+                    pass
+    return done
+
+
 def bulk_processor(config: "PluginConfig") -> None:
     import sqlite3
 
@@ -762,7 +803,7 @@ def bulk_processor(config: "PluginConfig") -> None:
         sqllite_db_loc: str = generalconf.get("databasePath")
     else:
         sqllite_db_loc = "stash-go.sqlite"
-    # Fetch all scene IDs
+
     try:
         with sqlite3.connect(sqllite_db_loc) as conn:
             cursor = conn.cursor()
@@ -777,28 +818,51 @@ def bulk_processor(config: "PluginConfig") -> None:
         logger.error("Stash DB is empty! exiting")
         return
 
+    log_dir = Path(config.LOG_FILE_LOCATION) if config.LOG_FILE_LOCATION else Path(".")
+    bulk_results: Path = log_dir / "bulk_results.csv"
+    no_stashdb_results: Path = log_dir / "no_stashdb.csv"  # I5
+
+    # I2: skip scenes already recorded as Success
+    already_done = _load_already_processed(bulk_results)
+    skipped = len([s for s in scene_ids if s in already_done])
+    if skipped:
+        logger.info("Resuming: skipping %d already-processed scenes", skipped)
+
     progress: float = 0
     progress_step: float = 1 / len(scene_ids)
-    bulk_results: Path = Path(f"{config.LOG_FILE_LOCATION}/bulk_results.csv")
 
-    with open(bulk_results, "a", newline="") as records:
+    with (
+        open(bulk_results, "a", newline="") as records,
+        open(no_stashdb_results, "a", newline="") as no_stashdb_file,  # I5
+    ):
         writer = csv.writer(records)
+        no_stashdb_writer = csv.writer(no_stashdb_file)
         if bulk_results.stat().st_size == 0:
-            writer.writerow(["scene_id", "success"])
+            writer.writerow(["scene_id", "result"])
             records.flush()
+        if no_stashdb_results.stat().st_size == 0:
+            no_stashdb_writer.writerow(["scene_id"])
+            no_stashdb_file.flush()
+
         for i, scene in enumerate(reversed(scene_ids), start=1):
-            # stash_log.debug(f"Processing Scene: {scene}")
+            if scene in already_done:  # I2
+                progress += progress_step
+                continue
             try:
-                success: str = process_single_scene(config, scene)
-                writer.writerow([scene, success])
+                result: str = process_single_scene(config, scene)
+                writer.writerow([scene, result])
+                if result == "NoStashDB ID":  # I5
+                    no_stashdb_writer.writerow([scene])
+                    no_stashdb_file.flush()
                 if i % 50 == 0:
                     records.flush()
             except Exception as err:
                 logger.error(f"main function error: {err}")
-                writer.writerow([scene, False])
+                writer.writerow([scene, "Error"])
                 records.flush()
             progress += progress_step
-            # stash_log.progress(progress)
+            if config.BULK_DELAY_SECONDS > 0:  # I3
+                time.sleep(config.BULK_DELAY_SECONDS)
 
 
 def main(

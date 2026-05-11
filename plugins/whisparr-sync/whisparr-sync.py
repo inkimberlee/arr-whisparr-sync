@@ -22,7 +22,7 @@ from stashapi import log as stash_log
 from stashapi.stashapp import StashInterface
 from urllib3.util.retry import Retry
 
-logger: logging.Logger
+logger: logging.Logger = logging.getLogger("whisparr_sync")
 # =========================
 # Custom Exceptions
 # =========================
@@ -521,10 +521,11 @@ class WhisparrInterface:
         return any(files_moved)
 
     def import_stash_file(self) -> None:
-        matched_preview = self._get_matching_preview_file()
-        if matched_preview is None:
+        matched_previews = self._get_matching_preview_files()
+        if not matched_previews:
             return
-        self._execute_manual_import(matched_preview)
+        for preview in matched_previews:
+            self._execute_manual_import(preview)
         if self.rename:
             self._queue_command("RenameFiles")
         else:
@@ -552,13 +553,14 @@ class WhisparrInterface:
                 raise ManualImportError(f"Manual import preview failed: {previews}")
         return previews
 
-    def _get_matching_preview_file(self) -> Optional[ManualImportPreviewFile]:
+    def _get_matching_preview_files(self) -> List[ManualImportPreviewFile]:
         previews = self._get_manual_import_preview()
-        for g in self.filenames:
-            matched = next((f for f in previews if f.path.name == g.path.name), None)
+        if not previews:
+            return []
+        scene_filenames = {f.path.name for f in self.filenames if f.path}
+        matched = [f for f in previews if f.path.name in scene_filenames]
         if not matched:
             logger.info("All files already imported to Whisparr")
-            return None
         return matched
 
     def _execute_manual_import(self, preview_file: ManualImportPreviewFile) -> None:

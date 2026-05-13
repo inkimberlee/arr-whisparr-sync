@@ -5,7 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import tomli
+try:
+    import tomllib as tomli  # Python 3.11+ stdlib
+except ImportError:
+    import tomli  # type: ignore[no-redef]  # backport for Python <3.11
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
                       field_validator)
 from stashapi import log as stash_log

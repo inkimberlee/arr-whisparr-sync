@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
 
 import requests
-import tomli
+try:
+    import tomllib as tomli  # Python 3.11+ stdlib
+except ImportError:
+    import tomli  # type: ignore[no-redef]  # backport for Python <3.11
 from config import (PluginConfig, load_config_logging, safe_json_preview,
                     switch_scene_log, truncate_path)
 from pydantic import (BaseModel, ConfigDict, Field, ValidationError,

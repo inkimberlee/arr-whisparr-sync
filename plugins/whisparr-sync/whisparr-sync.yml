@@ -34,6 +34,10 @@ settings:
     displayName: Move Files
     description: Move files after processing
     type: BOOLEAN
+  MOVE_CROSS_DEVICE:
+    displayName: Cross Device Move
+    description: Enable if whisparr root directory is on different device
+    type: BOOLEAN
 
   WHISPARR_RENAME:
     displayName: Enable Whisparr Rename

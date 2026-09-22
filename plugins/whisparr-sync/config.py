@@ -9,8 +9,7 @@ try:
     import tomllib as tomli  # Python 3.11+ stdlib
 except ImportError:
     import tomli  # type: ignore[no-redef]  # backport for Python <3.11
-from pydantic import (BaseModel, ConfigDict, Field, ValidationError,
-                      field_validator)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from stashapi import log as stash_log
 from stashapi.stashapp import StashInterface
 
@@ -27,6 +26,7 @@ class PluginConfig(BaseModel):
     # Behavior
     MONITORED: bool = True
     MOVE_FILES: bool = False
+    MOVE_CROSS_DEVICE: bool = False
     WHISPARR_RENAME: bool = True
     QUALITY_PROFILE: str = "Any"
     ROOT_FOLDER: Optional[Path] = None
@@ -269,6 +269,7 @@ def setup_logger(config, default_scene_id: int = 0) -> logging.Logger:
 
     return logger
 
+
 class StashHandler(logging.Handler):
     def __init__(self, stash_logger):
         super().__init__()
@@ -282,6 +283,7 @@ class StashHandler(logging.Handler):
             log_fn(msg)
         except Exception:
             self.handleError(record)
+
 
 def load_config_logging(toml_path: str, STASH_DATA: dict, dev: bool):
     global CONFIG

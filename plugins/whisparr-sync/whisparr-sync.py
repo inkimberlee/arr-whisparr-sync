@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+import shutil
 
 import requests
 try:
@@ -320,6 +321,7 @@ class FileManager:
         # Apply path mapping
         self.source: Path = self._path_mapping(source.parent, config.PATH_MAPPING)
         self.destination: Path = self._path_mapping(destination, config.PATH_MAPPING)
+        self.move_cross_device: bool = config.MOVE_CROSS_DEVICE
 
     def _path_mapping(self, path: Path, pathmap: dict) -> Path:
         """
@@ -365,9 +367,15 @@ class FileManager:
             target_file.parent.mkdir(parents=True, exist_ok=True)
             logger.info("source: %s", source)
             logger.info("target_file: %s", target_file)
+            logger.info("move_cross_device: %s", self.move_cross_device)
             if source != target_file:
                 # Move/replace the file
-                source.replace(target_file)
+                # Can be replace with source.move(target_file) on python 3.14, it
+                # checks if cross device, if not uses replace.
+                if self.move_cross_device:
+                    shutil.move(source, target_file)
+                else:
+                    source.replace(target_file)
 
                 # Retry checking if the file exists with exponential backoff
                 for attempt in range(retries):
@@ -415,6 +423,7 @@ class WhisparrInterface:
         self.key: str = config.WHISPARR_KEY
         self.monitored: bool = config.MONITORED
         self.move: bool = config.MOVE_FILES
+        self.move_cross_device: bool = config.MOVE_CROSS_DEVICE
         self.http_json = http_func
         self.rename: bool = config.WHISPARR_RENAME
         self.root_dir: str = str(config.ROOT_FOLDER) if config.ROOT_FOLDER else ""
